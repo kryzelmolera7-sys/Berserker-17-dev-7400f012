@@ -1,6 +1,9 @@
 name: Fetch NNUE chunks
 
 on:
+  push:
+    branches:
+      - arena/0d893c3e-berserker-17-dev-7400f012
   workflow_dispatch:
 
 permissions:
