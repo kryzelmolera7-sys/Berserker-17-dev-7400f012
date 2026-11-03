@@ -56,14 +56,13 @@ int MaxThreads = std::max(1024, 4 * int(get_hardware_concurrency()));
 // PR#6526). The user can always explicitly override this behavior.
 constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
-Engine::Engine(std::optional<std::filesystem::path> path) :
-    binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
-    states(new std::deque<StateInfo>(1)),
-    threads(),
-    networkFile{std::nullopt, ""},
-    network(numaContext, get_default_network()) {
-
+Engine::Engine(std::optional<std::filesystem::path> path)
+    : binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
+      numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
+      states(new std::deque<StateInfo>(1)),
+      threads(),
+      networkFile{std::nullopt, ""},
+      network(numaContext, get_default_network()) {
     pos.set(StartFEN, false, &states->back());
 
     options.add(  //
@@ -138,8 +137,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           return std::nullopt;
       }));
 
-    threads.clear();
-    threads.ensure_network_replicated();
+    // Single initialization path: no redundant clear/replicate before resize.
     resize_threads();
 }
 
@@ -156,6 +154,7 @@ void Engine::go(Search::LimitsType& limits) {
 
     threads.start_thinking(options, pos, states, limits);
 }
+
 void Engine::stop() { threads.stop = true; }
 
 void Engine::search_clear() {
@@ -194,18 +193,30 @@ void Engine::wait_for_search_finished() { threads.main_thread()->wait_for_search
 
 std::optional<PositionSetError> Engine::set_position(const std::string&              fen,
                                                      const std::vector<std::string>& moves) {
-    // Drop the old state and create a new one
-    states   = StateListPtr(new std::deque<StateInfo>(1));
-    auto err = pos.set(fen, options["UCI_Chess960"], &states->back());
+    const auto previousStates = states;
+    const auto previousFen    = pos.fen();
+    const auto previous960    = options["UCI_Chess960"];
+
+    // Start from a clean state: if anything fails, restore the previous position.
+    states = StateListPtr(new std::deque<StateInfo>(1));
+    auto err = pos.set(fen, previous960, &states->back());
     if (err.has_value())
+    {
+        states = previousStates;
+        pos.set(previousFen, previous960, &states->back());
         return err;
+    }
 
     for (const auto& move : moves)
     {
         auto m = UCIEngine::to_move(pos, move);
 
         if (m == Move::none())
+        {
+            states = previousStates;
+            pos.set(previousFen, previous960, &states->back());
             return PositionSetError("Illegal move: " + move);
+        }
 
         states->emplace_back();
         pos.do_move(m, states->back());
@@ -283,11 +294,8 @@ void Engine::verify_network() const {
 }
 
 std::unique_ptr<Eval::NNUE::Network> Engine::get_default_network() {
-
     auto network_ = std::make_unique<NN::Network>();
-
     network_->load(binaryDirectory, std::filesystem::path{}, networkFile);
-
     return network_;
 }
 
